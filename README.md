@@ -5,7 +5,7 @@ An Executing framework for AUSPEX.
 To cite **AUSPEX-EXEC**, please use the following reference: 
 ```
 @article{Doeschl-et-al:2025:AUSPEX,
-  author = {Bj\''orn D\''oschl and Kai Sommer and Jane Jean Kiam},
+  author = {Bj{\"o}rn D{\"o}schl and Kai Sommer and Jane Jean Kiam},
   title = {{AUSPEX: An Integrated Open-Source Decision-Making Framework for UAVs in Rescue Missions}},
   publisher = {TechRxiv.org},
   year = {2025},
