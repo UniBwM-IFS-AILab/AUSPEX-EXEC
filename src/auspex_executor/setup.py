@@ -19,10 +19,10 @@ setup(
     maintainer_email='bjoern.doeschl@unibw.de',
     description='AUSPEX Executor Package',
     license='MIT',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'executor_main_node = auspex_executor.executor_handler:main',
+            'test_node = auspex_executor.test_node:main'
         ],
     },
 )
