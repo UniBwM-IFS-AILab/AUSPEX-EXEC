@@ -47,6 +47,7 @@ class SequenceActionClient(CustomActionClient):
     def parseAction(self, single_action):
         execute_atom = ExecuteAtom()
         execute_atom.action_type = single_action.action_name
+        execute_atom.speed_m_s = 3.5  # Default speed
         actionName = single_action.action_name
 
         areas_db = self._kb_client.query(collection='area', key='', value='')
@@ -108,7 +109,7 @@ class SequenceActionClient(CustomActionClient):
                     execute_atom.altitude_level.value = AltitudeLevel.REL
                 execute_atom.goal_pose = wp_pose
 
-            case "fly_2D":
+            case "fly_2D" | "fly_2D_slow":
 
                 wp_pose = self.getGeoPoseForAction(index=1, action_atom=single_action)
                 if not wp_pose:
@@ -117,7 +118,7 @@ class SequenceActionClient(CustomActionClient):
 
                 self._last_planned_2Dwaypoint = wp_pose
 
-            case "fly_3D" | "fly" | "fly_step_3D":
+            case "fly_3D" | "fly_step_3D" | "fly_3D_slow" | "fly_step_3D_slow":
 
                 wp_pose = self.getGeoPoseForAction(index=1, action_atom=single_action)
                 if not wp_pose:
@@ -199,7 +200,7 @@ class SequenceActionClient(CustomActionClient):
                     execute_atom.altitude_level.value = AltitudeLevel.REL
                 execute_atom.goal_pose = wp_pose
                 execute_atom.radius = 7.0#self.get_real_value(single_action, 3)
-                execute_atom.speed = 5.0#self.get_real_value(single_action, 4) (31.4 meter/ (5 m/s))
+                execute_atom.speed_m_s = 5.0#self.get_real_value(single_action, 4) (31.4 meter/ (5 m/s))
                 execute_atom.hover_duration = 20000.0 #multiple of 6 for whole circles
                 self._last_planned_2Dwaypoint = wp_pose
 
@@ -242,11 +243,16 @@ class SequenceActionClient(CustomActionClient):
                     pose.x = wp_pose.position.latitude
                     pose.y = wp_pose.position.longitude
                     wp_poses2d.append(pose)
-
+                execute_atom.speed_m_s = 1.5
                 execute_atom.scan_polygon_vertices = wp_poses2d
                 execute_atom.height = height_amsl + scan_height
                 execute_atom.altitude_level.value = AltitudeLevel.AMSL
                 self._last_planned_2Dwaypoint = wp_pose[-1]
+
+        if "slow" in actionName:
+            execute_atom.speed_m_s = 2.0
+            if actionName.endswith('_slow'):
+                execute_atom.action_type = actionName[:-5]
 
         return execute_atom
 
@@ -254,31 +260,22 @@ class SequenceActionClient(CustomActionClient):
         '''
         Parsing up_msgs to actions msgs defined in auspex_msgs
         '''
-        execute_atoms_list = []
-
-        for single_action in self._actions:
-            execute_atom = self.parseAction(single_action)
-            if not execute_atom:
-                return None
-            execute_atoms_list.append(execute_atom)
-
+        execute_atoms_list = self.create_action_list(self._actions)
+        if not execute_atoms_list:
+            return None
         goal_msg.execute_atoms = execute_atoms_list
         return goal_msg
 
-    def create_goalmsg_from_up(self, action_list):
+    def create_action_list(self, action_list):
         '''
         Parsing action_list to actions msgs defined in auspex_msgs
-        Only used for addactions2action
         '''
         execute_atoms_list = []
-
         for single_action in action_list:
             execute_atom = self.parseAction(single_action)
             if not execute_atom:
                 return None
             execute_atoms_list.append(execute_atom)
-
-        execute_atoms_list
         return execute_atoms_list
 
     def getAreaForAction(self, index, action_atom):

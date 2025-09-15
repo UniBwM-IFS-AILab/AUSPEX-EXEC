@@ -192,55 +192,57 @@ class AuspexExecutor(Node):
 
         self.set_home(float(resp.origin.latitude), float(resp.origin.longitude), float(resp.origin.altitude))
 
-        self.get_logger().info(f"Got lat: {srv.gps_position.latitude}")
-        self.get_logger().info(f"Got long: {srv.gps_position.longitude}")
-        srv.resolution = 1
-        while not self._altitude_getter.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn("Altitude Service not available. Waiting...")
+        self.get_logger().info(f"FC HOME set to lat: {srv.gps_position.latitude}")
+        self.get_logger().info(f"FC HOME set to long: {srv.gps_position.longitude}")
+        self.get_logger().info(f"Initialised.")
 
-        self.get_logger().info(f"getAltitude service is available")
-        future = self._altitude_getter.call_async(srv)
-        future.add_done_callback(self.get_altitude_callback)
+        # srv.resolution = 1
+        # while not self._altitude_getter.wait_for_service(timeout_sec=1.0):
+        #     self.get_logger().warn("Altitude Service not available. Waiting...")
 
-    def get_altitude_callback(self, future):
-        respAlt = future.result()
+        # self.get_logger().info(f"getAltitude service is available")
+        # future = self._altitude_getter.call_async(srv)
+        # future.add_done_callback(self.get_altitude_callback)
 
-        if respAlt is None:
-            self.get_logger().error("GetAltitude service call returned None!")
-            return 0.0, 0.0, 0.0
+    # def get_altitude_callback(self, future):
+    #     respAlt = future.result()
 
-        if respAlt.success == True:
-            alt_aMSL = respAlt.altitude_amsl
+    #     if respAlt is None:
+    #         self.get_logger().error("GetAltitude service call returned None!")
+    #         return 0.0, 0.0, 0.0
 
-        self.set_home(self._home_position.latitude, self._home_position.longitude, alt_aMSL)
-        self.set_origin_remote([self._home_position.latitude, self._home_position.longitude, alt_aMSL])
+    #     if respAlt.success == True:
+    #         alt_aMSL = respAlt.altitude_amsl
 
-    def set_origin_remote(self, new_origin):
-        """
-        calls to a ROS2 service from the flight controller interface to set the origin position to a new_origin (to set the new altitude)
+    #     self.set_home(self._home_position.latitude, self._home_position.longitude, alt_aMSL)
+    #     self.set_origin_remote([self._home_position.latitude, self._home_position.longitude, alt_aMSL])
 
-        :param new_origin: a List[float] of 3 floats containing the new origin coordinates:
-                           new_origin[0]:= latitude, new_origin[1]:= longitude, new_origin[2]:= altitude
-        :param origin_result_callback: the callback to be executed when the async call of the service request is done
-        """
-        srv_request = SetOrigin.Request()
-        srv_request.origin.latitude = float(new_origin[0])
-        srv_request.origin.longitude = float(new_origin[1])
-        srv_request.origin.altitude = float(new_origin[2])
-        while not self._set_home_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn("_set_home_client Service not available. Waiting...")
-        future = self._set_home_client.call_async(srv_request)
-        future.add_done_callback(self.set_origin_callback)
+    # def set_origin_remote(self, new_origin):
+    #     """
+    #     calls to a ROS2 service from the flight controller interface to set the origin position to a new_origin (to set the new altitude)
 
-    def set_origin_callback(self, future):
-        resp = future.result()
-        if resp is None:
-            self.get_logger().error("SetOrigin service call returned None!")
-            return
-        if resp.success == True:
-            self.get_logger().info(f"Altitude set on drone.")
-        else:
-            self.get_logger().info(f"Failed to set altitude.")
+    #     :param new_origin: a List[float] of 3 floats containing the new origin coordinates:
+    #                        new_origin[0]:= latitude, new_origin[1]:= longitude, new_origin[2]:= altitude
+    #     :param origin_result_callback: the callback to be executed when the async call of the service request is done
+    #     """
+    #     srv_request = SetOrigin.Request()
+    #     srv_request.origin.latitude = float(new_origin[0])
+    #     srv_request.origin.longitude = float(new_origin[1])
+    #     srv_request.origin.altitude = float(new_origin[2])
+    #     while not self._set_home_client.wait_for_service(timeout_sec=1.0):
+    #         self.get_logger().warn("_set_home_client Service not available. Waiting...")
+    #     future = self._set_home_client.call_async(srv_request)
+    #     future.add_done_callback(self.set_origin_callback)
+
+    # def set_origin_callback(self, future):
+    #     resp = future.result()
+    #     if resp is None:
+    #         self.get_logger().error("SetOrigin service call returned None!")
+    #         return
+    #     if resp.success == True:
+    #         self.get_logger().info(f"Altitude set on drone.")
+    #     else:
+    #         self.get_logger().info(f"Failed to set altitude.")
 
     def finished_sequence_callback(self, actions = [], params = [[]], result = 0):
         """
@@ -314,7 +316,7 @@ class AuspexExecutor(Node):
         """
         self.get_logger().info('Adding Actions to action...')
         request = AddAction.Request()
-        parsed_actions = self._sequence_client.create_goalmsg_from_up(atoms_list)
+        parsed_actions = self._sequence_client.create_action_list(atoms_list)
         request.execute_atoms = parsed_actions
         while not self._add_action_service.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('service not available, waiting again...')
