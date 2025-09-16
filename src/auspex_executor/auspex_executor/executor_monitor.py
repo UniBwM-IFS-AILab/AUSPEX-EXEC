@@ -379,6 +379,13 @@ class AuspexExecutorMonitor(Node):
         self._planner_command_publisher.publish(msg)
 
     def planner_callback(self, msg):
+        print("Received command: " + enum_to_str(ExecutorCommand, msg.command) + " for team: " + self._team_id)
+        print(msg.platform_id)
+        if msg.platform_id != "" and msg.platform_id in self._executor_interfaces:
+            executor = self._executor_interfaces[msg.platform_id]
+            executor.send_command(msg.command)
+            return
+
         if msg.command == ExecutorCommand.EXECUTE:
             if self._executor_state == ExecutorState.STATE_EXECUTING:
                 self.get_logger().info('Executor already executing...')
@@ -397,3 +404,11 @@ class AuspexExecutorMonitor(Node):
             self.send_resume()
         elif msg.command == ExecutorCommand.CANCEL:
             self.cancelGoal()
+        elif msg.command == ExecutorCommand.TERMINATE:
+            for executor in self._executor_interfaces.values():
+                executor.send_command(ExecutorCommand.TERMINATE)
+            self.change_executor_state(ExecutorState.STATE_IDLE)
+        elif msg.command == ExecutorCommand.KILL:
+            for executor in self._executor_interfaces.values():
+                executor.send_command(ExecutorCommand.KILL)
+            self.change_executor_state(ExecutorState.STATE_IDLE)

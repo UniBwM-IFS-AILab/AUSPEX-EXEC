@@ -67,7 +67,7 @@ class SequenceActionClient(CustomActionClient):
                     execute_atom.goal_pose.position.altitude= 10.0
                     execute_atom.altitude_level.value = AltitudeLevel.REL
 
-                self._last_planned_2Dwaypoint = self._operation_areas['home']['points'][0]
+                self._last_planned_2Dwaypoint = self._operation_areas['home_'+self._platform_id]['points'][0]
 
             case "land":
 
@@ -76,7 +76,7 @@ class SequenceActionClient(CustomActionClient):
             case "return_home_and_land":
 
                 wp_pose = GeoPose()
-                wp_resolved = self._operation_areas['home']['points'][0]
+                wp_resolved = self._operation_areas['home_'+self._platform_id]['points'][0]
                 wp_pose.position.latitude = float(wp_resolved[0])
                 wp_pose.position.longitude = float(wp_resolved[1])
                 wp_pose.position.altitude = float(10.0)
@@ -338,7 +338,7 @@ class SequenceActionClient(CustomActionClient):
         wp_resolved = self._operation_areas[area]['points'][0]
         if len(wp_resolved)<=2:
             wp_resolved.append(0.0)
-        elif area == 'home':
+        elif 'home' in area:
             wp_resolved[2] = 5.0
         return self.getGeoPose(float(wp_resolved[0]), float(wp_resolved[1]), float(wp_resolved[2]))
 

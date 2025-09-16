@@ -14,9 +14,9 @@ from auspex_executor.action_clients.sequence_action_client import SequenceAction
 
 from auspex_db_client.kb_client import KB_Client
 from .utils import parse_plan_from_dict, enum_to_str
-from auspex_msgs.msg import ExecutorCommand, PlannerCommand, ExecutorState, ExecutionInfo, ActionInstance, ActionStatus, PlanStatus
+from auspex_msgs.msg import ExecutorCommand, PlannerCommand, ExecutorState, ExecutionInfo, ActionInstance, ActionStatus, PlanStatus, PlatformCommand
 
-from msg_context.loader import ObjectKnowledge, UserCommand
+from msg_context.loader import ObjectKnowledge
 
 from auspex_msgs.srv import (
     GetOrigin,
@@ -91,7 +91,7 @@ class AuspexExecutor(Node):
         """
         Create publisher
         """
-        self._user_command_publisher = self.sub_node.create_publisher(UserCommand, '/' +self._platform_id + '/user_command', 10, callback_group=self._cb_group_pubsub)
+        self._platform_command_publisher = self.sub_node.create_publisher(PlatformCommand, '/' +self._platform_id + '/platform_command', 10, callback_group=self._cb_group_pubsub)
         self._monitor_command_publisher = self.sub_node.create_publisher(PlannerCommand, '/' +self._platform_id + '/executor_to_monitor', 10, callback_group=self._cb_group_pubsub)
 
         """
@@ -163,8 +163,9 @@ class AuspexExecutor(Node):
         self._home_position.altitude = float(alt)
         self._position_lock.release()
 
-        coordinates = json.dumps([[str(lat), str(lon), str(alt)]])
-        self._kb_client.write(collection='area', entity=coordinates,field='points', key='name', value='home')
+        home_json = json.dumps({"name": "home_"+self._platform_id, "points": [[str(lat), str(lon), str(alt)]]})
+   
+        self._kb_client.write(collection='area', entity=home_json, key='name', value='home_'+self._platform_id)
 
     def setup_origin(self):
         """
@@ -195,54 +196,6 @@ class AuspexExecutor(Node):
         self.get_logger().info(f"FC HOME set to lat: {srv.gps_position.latitude}")
         self.get_logger().info(f"FC HOME set to long: {srv.gps_position.longitude}")
         self.get_logger().info(f"Initialised.")
-
-        # srv.resolution = 1
-        # while not self._altitude_getter.wait_for_service(timeout_sec=1.0):
-        #     self.get_logger().warn("Altitude Service not available. Waiting...")
-
-        # self.get_logger().info(f"getAltitude service is available")
-        # future = self._altitude_getter.call_async(srv)
-        # future.add_done_callback(self.get_altitude_callback)
-
-    # def get_altitude_callback(self, future):
-    #     respAlt = future.result()
-
-    #     if respAlt is None:
-    #         self.get_logger().error("GetAltitude service call returned None!")
-    #         return 0.0, 0.0, 0.0
-
-    #     if respAlt.success == True:
-    #         alt_aMSL = respAlt.altitude_amsl
-
-    #     self.set_home(self._home_position.latitude, self._home_position.longitude, alt_aMSL)
-    #     self.set_origin_remote([self._home_position.latitude, self._home_position.longitude, alt_aMSL])
-
-    # def set_origin_remote(self, new_origin):
-    #     """
-    #     calls to a ROS2 service from the flight controller interface to set the origin position to a new_origin (to set the new altitude)
-
-    #     :param new_origin: a List[float] of 3 floats containing the new origin coordinates:
-    #                        new_origin[0]:= latitude, new_origin[1]:= longitude, new_origin[2]:= altitude
-    #     :param origin_result_callback: the callback to be executed when the async call of the service request is done
-    #     """
-    #     srv_request = SetOrigin.Request()
-    #     srv_request.origin.latitude = float(new_origin[0])
-    #     srv_request.origin.longitude = float(new_origin[1])
-    #     srv_request.origin.altitude = float(new_origin[2])
-    #     while not self._set_home_client.wait_for_service(timeout_sec=1.0):
-    #         self.get_logger().warn("_set_home_client Service not available. Waiting...")
-    #     future = self._set_home_client.call_async(srv_request)
-    #     future.add_done_callback(self.set_origin_callback)
-
-    # def set_origin_callback(self, future):
-    #     resp = future.result()
-    #     if resp is None:
-    #         self.get_logger().error("SetOrigin service call returned None!")
-    #         return
-    #     if resp.success == True:
-    #         self.get_logger().info(f"Altitude set on drone.")
-    #     else:
-    #         self.get_logger().info(f"Failed to set altitude.")
 
     def finished_sequence_callback(self, actions = [], params = [[]], result = 0):
         """
@@ -333,7 +286,7 @@ class AuspexExecutor(Node):
             return
 
         self.get_logger().info('Pausing current actions...')
-        self.send_user_command(UserCommand.USER_PAUSE)
+        self.send_platform_command(PlatformCommand.PLATFORM_PAUSE)
         self._is_vhcl_paused = True
         self._kb_client.update(collection='plan', new_value=enum_to_str(PlanStatus, PlanStatus.PAUSED), field='status', key='plan_id', value=str(self._plan_id))
 
@@ -350,7 +303,7 @@ class AuspexExecutor(Node):
         if not self._is_vhcl_paused:
             return
         self.get_logger().info('Resuming current actions...')
-        self.send_user_command(UserCommand.USER_RESUME)
+        self.send_platform_command(PlatformCommand.PLATFORM_RESUME)
         self._is_vhcl_paused = False
 
         self._kb_client.update(collection='plan', new_value=enum_to_str(PlanStatus, PlanStatus.ACTIVE), field='status', key='plan_id', value=str(self._plan_id))
@@ -367,22 +320,34 @@ class AuspexExecutor(Node):
             self.cancel_future = self._sequence_client.cancel_action_goal()
             self._current_plan = []
 
-    def send_user_command(self, command):
+    def terminatePlatform(self):
+        if self._executor_state != ExecutorState.STATE_IDLE:
+            self.change_executor_state(ExecutorState.STATE_IDLE)
+        self.get_logger().info("Terminating platform...")
+        self.send_platform_command(PlatformCommand.PLATFORM_TERMINATE)
+
+    def killPlatform(self):
+        if self._executor_state != ExecutorState.STATE_IDLE:
+            self.change_executor_state(ExecutorState.STATE_IDLE)
+        self.get_logger().info("Killing platform...")
+        self.send_platform_command(PlatformCommand.PLATFORM_KILL)
+
+    def send_platform_command(self, command):
         """
-        Sends a user command to the drone
+        Sends a platform command to the drone
         """
-        if not self._is_vhcl_paused:
-            if command == UserCommand.USER_PAUSE:
-                msg = UserCommand()
-                msg.user_command = command
-                self._user_command_publisher.publish(msg)
+        msg = PlatformCommand()
+        msg.platform_command = command
+
+        if command == PlatformCommand.PLATFORM_PAUSE:
+            if not self._is_vhcl_paused:
                 self._is_vhcl_paused = True
-        elif self._is_vhcl_paused:
-            if command == UserCommand.USER_RESUME:
-                msg = UserCommand()
-                msg.user_command = command
-                self._user_command_publisher.publish(msg)
+        elif command == PlatformCommand.PLATFORM_RESUME:
+            if self._is_vhcl_paused:
+                msg.platform_command = command
                 self._is_vhcl_paused = False
+
+        self._platform_command_publisher.publish(msg)
 
     def execute_sequence(self, sequence_length):
         """
@@ -520,3 +485,7 @@ class AuspexExecutor(Node):
             self.send_resume()
         elif msg.command == ExecutorCommand.CANCEL:
             self.cancelGoal()
+        elif msg.command == ExecutorCommand.KILL:
+            self.killPlatform()
+        elif msg.command == ExecutorCommand.TERMINATE:
+            self.terminatePlatform()
