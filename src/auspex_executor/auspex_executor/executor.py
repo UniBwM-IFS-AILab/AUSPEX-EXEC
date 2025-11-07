@@ -16,7 +16,7 @@ from auspex_db_client.kb_client import KB_Client
 from .utils import parse_plan_from_dict, enum_to_str
 from auspex_msgs.msg import ExecutorCommand, PlannerCommand, ExecutorState, ExecutionInfo, ActionInstance, ActionStatus, PlanStatus, PlatformCommand
 
-from msg_context.loader import ObjectKnowledge
+from auspex_msgs.msg import ObjectKnowledge
 
 from auspex_msgs.srv import (
     GetOrigin,
@@ -147,9 +147,87 @@ class AuspexExecutor(Node):
         self._setup_timer.cancel()
         try:
             self.setup_origin()
-            self.get_logger().info("Origin setup completed.")
         except Exception as e:
             self.get_logger().error(f"setup_origin failed: {e}")
+
+    def setup_origin(self):
+        """
+        calls to a ROS2 service from the flight controller interface to get the origin position
+
+        :param origin_result_callback: the callback to be executed when the async call of the service request is done
+        """
+        srv = GetOrigin.Request()
+        srv.requested = True
+        while not self._get_home_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info(f"get_origin service not available")
+        self.get_logger().info(f"get_origin service is available")
+
+        future = self._get_home_client.call_async(srv)
+        future.add_done_callback(self.get_origin_callback)
+
+    
+    def get_origin_callback(self, future):
+        resp = future.result()
+        if resp is None:
+            self.get_logger().error("GetOrigin service call returned None! Do not Take OFF!")
+            return 0.0, 0.0, 0.0
+
+        # Set home position
+        self.set_home(resp.origin.latitude, resp.origin.longitude, resp.origin.altitude)
+        
+        self.get_logger().info(f"FC LAT HOME set to: {resp.origin.latitude}")
+        self.get_logger().info(f"FC LONG HOME set to: {resp.origin.longitude}")
+
+        #compute alt
+        srv = GetAltitude.Request()
+        srv.gps_position.latitude = resp.origin.latitude
+        srv.gps_position.longitude = resp.origin.longitude
+        srv.gps_position.altitude = resp.origin.altitude
+
+        srv.resolution = 1  # Set resolution as in the C++ code
+
+        while not self._altitude_getter.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info("Altitude service not available, waiting again...")
+
+        future = self._altitude_getter.call_async(srv)
+        future.add_done_callback(self.get_altitude_callback)
+
+    def get_altitude_callback(self, future):
+        alt_resp = future.result()
+        if alt_resp is None or alt_resp.altitude_amsl == -1.0:
+            self.get_logger().error("GetAltitude service call returned None! Do not Take OFF!")
+            return 0.0, 0.0, 0.0
+
+        absolute_alt = float(alt_resp.altitude_amsl) + self._home_position.altitude
+
+        self.set_home_alt(absolute_alt)
+
+        self.get_logger().info(f"FC ALT HOME set to: {absolute_alt}")
+
+        # Use the SetOrigin service to update the home position on the platform
+        srv = SetOrigin.Request()
+        srv.origin.latitude = self._home_position.latitude
+        srv.origin.longitude = self._home_position.longitude
+        srv.origin.altitude = float(alt_resp.altitude_amsl)
+
+        while not self._set_home_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info("SetHome service not available")
+
+        future = self._set_home_client.call_async(srv)
+        
+    
+    def set_home_alt(self, alt):
+        """
+        Sets the home altitude to a specific value
+        """
+
+        self._position_lock.acquire()
+        self._home_position.altitude = alt
+        self._position_lock.release()
+
+        home_json = json.dumps({"name": "home_"+self._platform_id, "points": [[str(self._home_position.latitude), str(self._home_position.longitude), str(alt)]]})
+   
+        self._kb_client.write(collection='area', entity=home_json, key='name', value='home_'+self._platform_id)
 
     def set_home(self, lat, lon, alt):
         """
@@ -167,36 +245,6 @@ class AuspexExecutor(Node):
    
         self._kb_client.write(collection='area', entity=home_json, key='name', value='home_'+self._platform_id)
 
-    def setup_origin(self):
-        """
-        calls to a ROS2 service from the flight controller interface to get the origin position
-
-        :param origin_result_callback: the callback to be executed when the async call of the service request is done
-        """
-        srv = GetOrigin.Request()
-        while not self._get_home_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(f"getHome service not available")
-        self.get_logger().info(f"getHome service is available")
-        future = self._get_home_client.call_async(srv)
-        future.add_done_callback(self.get_origin_callback)
-
-    def get_origin_callback(self, future):
-        resp = future.result()
-        if resp is None:
-            self.get_logger().error("GetOrigin service call returned None! Do not Take OFF!")
-            return 0.0, 0.0, 0.0
-        #compute alt
-        srv = GetAltitude.Request()
-        srv.gps_position.latitude = resp.origin.latitude
-        srv.gps_position.longitude = resp.origin.longitude
-        srv.gps_position.altitude = resp.origin.altitude
-
-        self.set_home(float(resp.origin.latitude), float(resp.origin.longitude), float(resp.origin.altitude))
-
-        self.get_logger().info(f"FC HOME set to lat: {srv.gps_position.latitude}")
-        self.get_logger().info(f"FC HOME set to long: {srv.gps_position.longitude}")
-        self.get_logger().info(f"Initialised.")
-
     def finished_sequence_callback(self, actions = [], params = [[]], result = 0):
         """
         Wrapper for the callback from the action sequence client after the sequence was executed/canceled.
@@ -207,6 +255,8 @@ class AuspexExecutor(Node):
         """
 
         if result.status == GoalStatus.STATUS_SUCCEEDED:
+            if result.result.error_code == 5:
+                return [[]]
             for idx, action in enumerate(actions):
                 self._kb_client.update_action_status(plan_id=self._plan_id, action_id=action.id, new_status=enum_to_str(ActionStatus, ActionStatus.COMPLETED))
 
@@ -227,7 +277,7 @@ class AuspexExecutor(Node):
             self._kb_client.update(collection='plan', new_value=enum_to_str(PlanStatus, PlanStatus.CANCELED), field='status', key='plan_id', value=str(self._plan_id))
             self._current_plan = []
             self._plan_id = -1
-            self.get_logger().info(f"Executor {self._platform_id}: Canceled action confirmation.")
+            self.get_logger().info(f"Executor {self._platform_id}: Goal canceled.")
             self.publish_monitorCommand(command=PlannerCommand.CANCEL_DONE, info_msg=ExecutionInfo(platform_id=self._platform_id))
         elif result.status == GoalStatus.STATUS_ABORTED:
             self.change_executor_state(ExecutorState.STATE_IDLE)
@@ -375,8 +425,8 @@ class AuspexExecutor(Node):
                     params.append(str(param.int_atom[0]))
                 elif len(param.real_atom) != 0:
                     params.append(str(param.real_atom[0]))
-                elif len(param.bool_atom) != 0:
-                    params.append(str(param.bool_atom[0]))
+                elif len(param.boolean_atom) != 0:
+                    params.append(str(param.boolean_atom[0]))
             params_list.append(params)
             self.get_logger().info("Next action in sequence: " + action.action_name+"("+", ".join(params)+")")
 

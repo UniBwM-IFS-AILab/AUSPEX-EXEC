@@ -14,7 +14,6 @@
   <depend>up_msgs</depend>
   <depend>auspex_msgs</depend>
   <depend>auspex_db_client</depend>
-  <depend>msg_context</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

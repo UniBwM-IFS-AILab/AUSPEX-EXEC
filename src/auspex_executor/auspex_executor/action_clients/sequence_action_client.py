@@ -1,5 +1,4 @@
 from geometry_msgs.msg import Pose2D
-from msg_context.loader import ExecuteAtom
 from rclpy.executors import MultiThreadedExecutor
 from auspex_executor.action_clients.custom_action_client import CustomActionClient
 from tf_transformations import quaternion_from_euler
@@ -11,7 +10,7 @@ from geopy.point import Point
 import math
 from geographic_msgs.msg import GeoPose
 
-from auspex_msgs.msg import AltitudeLevel
+from auspex_msgs.msg import AltitudeLevel, ExecuteAtom
 from auspex_msgs.srv import (
     GetAltitude,
     GetHeighestPoint
@@ -47,7 +46,7 @@ class SequenceActionClient(CustomActionClient):
     def parseAction(self, single_action):
         execute_atom = ExecuteAtom()
         execute_atom.action_type = single_action.action_name
-        execute_atom.speed_m_s = 3.5  # Default speed
+        execute_atom.speed_m_s = 5.0  # Default speed
         actionName = single_action.action_name
 
         areas_db = self._kb_client.query(collection='area', key='', value='')
@@ -188,16 +187,12 @@ class SequenceActionClient(CustomActionClient):
                 execute_atom.goal_pose = wp_pose
                 self._last_planned_2Dwaypoint = wp_pose
 
-            case "circle_poi":
+            case "circle_poi" | "circle":
+                execute_atom.action_type = "circle_poi"
+                wp_pose =  self._last_planned_2Dwaypoint
+                height_amsl = self.getAltitudeFromDB(wp_pose)
+                wp_pose.position.altitude = height_amsl + self.get_real_value(single_action, 3)
 
-                wp_pose = GeoPose()
-                wp_pose = self.getGeoPoseForAction(index=2, action_atom=single_action)
-                if single_action.parameters[1].symbol_atom[0] == 'amsl':
-                    execute_atom.altitude_level.value = AltitudeLevel.AMSL
-                elif single_action.parameters[1].symbol_atom[0] == 'agl':
-                    execute_atom.altitude_level.value = AltitudeLevel.AGL
-                elif single_action.parameters[1].symbol_atom[0] == 'rel':
-                    execute_atom.altitude_level.value = AltitudeLevel.REL
                 execute_atom.goal_pose = wp_pose
                 execute_atom.radius = 7.0#self.get_real_value(single_action, 3)
                 execute_atom.speed_m_s = 5.0#self.get_real_value(single_action, 4) (31.4 meter/ (5 m/s))
@@ -250,7 +245,7 @@ class SequenceActionClient(CustomActionClient):
                 self._last_planned_2Dwaypoint = wp_pose[-1]
 
         if "slow" in actionName:
-            execute_atom.speed_m_s = 2.0
+            execute_atom.speed_m_s = 3.5
             if actionName.endswith('_slow'):
                 execute_atom.action_type = actionName[:-5]
 
@@ -427,6 +422,10 @@ class SequenceActionClient(CustomActionClient):
         return float(single_action.parameters[pos].real_atom[0].numerator)/ float(single_action.parameters[pos].real_atom[0].denominator)
 
 '''
+
+These are all actions the executer can translate.
+The planner actions differ.
+
 'if not defined others, ALTITUDE (alt) is always above ground'
 ['take_off', height_in_metres] # takeoff to height in metres above ground
 ['land'] # Land at current position
@@ -435,26 +434,20 @@ class SequenceActionClient(CustomActionClient):
 ['descend', 'amsl|agl|rel', height_in_metres] # descend either above mean sea level (amsl), above ground level (agl), relative to current height (rel)
 ['hover', duration] # hover for duration in milliseconds (10000ms -> 10 seconds)
 
-['fly', uav, lat, lon] # flies in current height to next lat lon coordinates
-['fly', uav, 'wp'] # flies in current height to next lat lon coordinates
-['fly_2D', lat, lon] # flies in current height to next lat lon coordinates
-['fly_2D', 'wp'] # flies in current height to next waypoint from knowledgebase
+['fly_2D', lat, lon, (alt)] # flies in current height to next lat lon coordinates
 ['fly_3D', lat, lon, alt] # fly to new 3D lat, lon, alt coordinate
-['fly_3D', 'wp'] # fly to now 3D waypoint from knowledgebase
-['fly_step_3D', 'wp'] # fly 3D in descend/ascend steps
 ['fly_step_3D', lat, lon, alt]
-['fly_above_highest_point', height_in_metres, 'wp'] # flies to waypoint in height above heighest point in the bounding box
 ['fly_above_highest_point', height_in_metres, lat, lon] # flies to waypoint in height above heighest point in the bounding box
+
 ['start_detection'] # start the object detection. Is already included in searchArea
 ['stop_detection'] # stops the object detection. Is already included in searchArea
 ['capture_image'] # takes an image and sends it to the topic
 ['turn', degree] # turn rel to current orientation (+ is clockwise)
-['hover_left', 'wp'] # flies with a +30. degree orientation to the next waypoint
+
 ['hover_left', lat,lon] # flies with a +30. degree orientation to the next lat lon coordinates
-['hover_right', 'wp'] # flies with a -30. degree orientation to the next waypoint
 ['hover_right', lat, lon] # flies with a -30. degree orientation to the next lat lon coordinates
-['circle_poi', 'amsl|agl|rel', 'wp'] # circles a given waypoint in a given altitude for one full circle
 ['circle_poi', 'amsl|agl|rel', lat, lon, alt] # circles a given waypoint in a given altitude for one full circle
+
 ['scan_area_uav', 'amsl|agl|ahp', height_in_metres, 'wp']# Scans an area for photogrametry
 ['search_area_uav', 'amsl|agl|ahp',height_in_metres, 'object description', lat1, lon1, alt1, lat2, lon2, alt2] # searches an area for object and stops if found
 ['search_area_uav', 'amsl|agl|ahp',height_in_metres, 'object description', 'operation_area'] # Search operation area in given height until done or object found.
@@ -467,4 +460,8 @@ class SequenceActionClient(CustomActionClient):
 --['communicate', 'ros/...']
 --['follow_object', 'object_class_for_detection']
 --['get_data_from_knowledgebase', 'data']
+'''
+
+'''
+
 '''

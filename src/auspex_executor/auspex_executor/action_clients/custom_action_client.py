@@ -95,7 +95,7 @@ class CustomActionClient:
         """
         try:
             self._result_mutex.acquire()
-            self.logger.info('Goal returned by action server.')
+            self.logger.info(f'Goal returned by action server.')
             params = self.result_callback(self._actions, self._params, future.result())
             self._result_mutex.release()
         except Exception as e:

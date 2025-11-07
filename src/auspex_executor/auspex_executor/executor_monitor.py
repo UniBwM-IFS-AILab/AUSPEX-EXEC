@@ -11,7 +11,7 @@ from auspex_executor.action_clients.executor_interface import ExecutorInterface
 from auspex_db_client.kb_client import KB_Client
 from auspex_msgs.msg import ExecutorCommand, PlannerCommand, ExecutorState, ExecutionInfo, ActionInstance, ActionStatus, PlanStatus
 
-from msg_context.loader import ObjectKnowledge
+from auspex_msgs.msg import ObjectKnowledge
 
 class AuspexExecutorMonitor(Node):
     """
@@ -55,11 +55,6 @@ class AuspexExecutorMonitor(Node):
         self._executor_interfaces = {}
 
         """
-        Detected Objects
-        """
-        self._detected_objects_list = []
-
-        """
         Current goals for this platform
         """
         self._current_goals = []
@@ -72,7 +67,6 @@ class AuspexExecutorMonitor(Node):
 
     def init_executor(self):
         self._planner_command_publisher = self.sub_node.create_publisher(PlannerCommand, '/' +self._team_id + '/monitor_to_planner', 10, callback_group=self._cb_group_pubsub)
-        self._object_detections = self.sub_node.create_subscription(ObjectKnowledge, '/detections', self.object_detection_callback, 10, callback_group=self._cb_group_pubsub)
         self._monitor_command_subscriber = self.sub_node.create_subscription(ExecutorCommand, '/' +self._team_id + '/planner_to_monitor', self.planner_callback, 10, callback_group=self._cb_group_pubsub)
         self.create_timer(0.1, callback=self._check_current_execution, callback_group=self._cb_group_actions)
 
@@ -126,12 +120,6 @@ class AuspexExecutorMonitor(Node):
                     self.send_pause()
                     self.publish_plannerCommand(command=PlannerCommand.UPDATEPLAN, info_msg=ExecutionInfo(team_id=self._team_id, status_flags=flags))
 
-    def object_detection_callback(self, msg):
-        """
-        Object Detection Callback form AUSPEX-SENS
-        """
-        self._detected_objects_list.append(msg)
-
     def has_incomplete_goals(self):
         if not self._current_goals:
             return False
@@ -174,32 +162,31 @@ class AuspexExecutorMonitor(Node):
 
             params = goal.get('parameters_json',{})
 
-            if goal_type == 'FIND' and params.get('objects'):
+            if goal_type == 'FIND' and params.get('target_objects'):
+                detected_objects_db = self._kb_client.query(collection='object')
 
-                for detected_obj in self._detected_objects_list:
-                    if detected_obj.detection_class in params['objects'] and detected_obj.confidence > 0.5:
+                for detected_obj in detected_objects_db:
+                    if detected_obj['detection_class'] in params['target_objects'] and float(detected_obj['confidence']) > 0.7:
 
-                        self._kb_client.update(collection='object', new_value='10', field='priority', key='id', value=detected_obj.id)
+                        self._kb_client.update(collection='object', new_value='10', field='priority', key='id', value=detected_obj['id'])
                         self._kb_client.update(collection='goal', new_value='COMPLETED', field='status', key='goal_id', value=goal_id)
                         flag_msg = f"OBJECT_CONFIRMED"
                         flags.append(flag_msg)
 
-                    elif detected_obj.detection_class in params['objects'] and detected_obj.confidence > 0.2 and detected_obj.confidence < 0.5:
+                    elif detected_obj['detection_class'] in params['target_objects'] and float(detected_obj['confidence']) >= 0.39 and float(detected_obj['confidence']) <= 0.5:
 
                         flag_msg = f"POSSIBLE_OBJECT_DETECTED"
                         flags.append(flag_msg)
-                        self._kb_client.update(collection='object', new_value='0.6', field='confidence', key='id', value=detected_obj.id)
-
-                self._detected_objects_list = []
+                        self._kb_client.update(collection='object', new_value='0.6', field='confidence', key='id', value=detected_obj['id'])
 
             elif goal_type == 'SEARCH':
 
                 polygon_points = []
                 polygon_points_list = []
-                if params.get('search_area') and params.get('search_area').get('points'):
-
-                    polygon_points = params.get('search_area').get('points')
-                    polygon_points_list.append(polygon_points)
+                if params.get('search_areas') and params.get('search_areas')[0].get('points'):
+                    for area in params.get('search_areas'):
+                        polygon_points = area.get('points')
+                        polygon_points_list.append(polygon_points)
 
                 elif params.get('locations'):
                     for location in params['locations']:
@@ -379,8 +366,6 @@ class AuspexExecutorMonitor(Node):
         self._planner_command_publisher.publish(msg)
 
     def planner_callback(self, msg):
-        print("Received command: " + enum_to_str(ExecutorCommand, msg.command) + " for team: " + self._team_id)
-        print(msg.platform_id)
         if msg.platform_id != "" and msg.platform_id in self._executor_interfaces:
             executor = self._executor_interfaces[msg.platform_id]
             executor.send_command(msg.command)

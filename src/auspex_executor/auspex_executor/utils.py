@@ -1,8 +1,7 @@
 import json
 import math
 from typing import List, Dict, Tuple
-from auspex_msgs.msg import PlanStatus
-from msg_context.loader import ActionInstance, Plan, ActionStatus
+from auspex_msgs.msg import PlanStatus, ActionInstance, Plan, ActionStatus
 from fractions import Fraction
 
 from upf_msgs.msg import (
