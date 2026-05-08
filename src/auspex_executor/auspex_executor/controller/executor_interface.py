@@ -1,21 +1,22 @@
 from rclpy import logging
 from auspex_msgs.msg import ExecutorCommand, PlannerCommand, ExecutorState
-from auspex_executor.utils import enum_to_str
+from auspex_executor.utils.utils import enum_to_str
 from rclpy.qos import qos_profile_sensor_data
+from builtin_interfaces.msg import Time
 import traceback
 
 class ExecutorInterface:
     """
-    Communication interface between executor and monitor of a platform.
+    Communication interface between executor and controller of a platform.
 
-    monitor-to-executor commands: "execute", "continue", "pause", "cancel".
-    executor-to-monitor commands: "replan", "finished", "updateplan", (optionally "feedback").
+    controller-to-executor commands: "execute", "continue", "pause", "cancel".
+    executor-to-controller commands: "replan", "finished", "updateplan", (optionally "feedback").
     """
     def __init__(self, node, platform_id, team_id, feedback_callback, result_callback, cancel_done_callback):
         """
         Constructor method
 
-        :param Node node: the planner node
+        :param Node node: the controller node
         :param Callable feedback_callback: function pointer for feedback callback function in plan executor
         :param Callable result_callback: function pointer for result callback function in plan executor
         """
@@ -28,35 +29,48 @@ class ExecutorInterface:
         # To indicate a finished execution
         self._finished_execution = False
 
-        # Publisher for commands from planner to executor.
-        topic_pub = f"/{platform_id}/monitor_to_executor"
+        # Publisher for commands from controller to executor.
+        topic_pub = f"/{platform_id}/controller2executor"
         self._pub = self._node.create_publisher(ExecutorCommand, topic_pub, 10)
 
-        # Subscriber for commands from executor to planner.
-        topic_sub = f"/{platform_id}/executor_to_monitor"
+        # Subscriber for commands from executor to controller.
+        topic_sub = f"/{platform_id}/executor2controller"
         self._sub = self._node.create_subscription(PlannerCommand, topic_sub, self.executor_callback, 10)
 
         self._feedback_callback = feedback_callback
         self._result_callback = result_callback
         self._cancel_done_callback = cancel_done_callback
 
-    def send_command(self, command):
+    def send_command(self, command, execution_start_time: Time = None):
         """
-        Sends a command from the monitor to the executor.
+        Sends a command from the controller to the executor.
 
-        :param str command: One of "execute", "continue", "pause", or "cancel".
-        :param dict or list plan: Optional plan data to include.
+        :param int command: One of EXECUTE, CONTINUE, PAUSE, CANCEL, TERMINATE, or KILL.
+        :param Time execution_start_time: Optional synchronized start time for TPN execution. 
+                                          If None, uses current time for EXECUTE commands.
         """
         if command == ExecutorCommand.EXECUTE:
             self._finished_execution = False
         msg = ExecutorCommand()
         msg.command = command
+        
+        # For EXECUTE command, set execution start time (use current time if not provided)
+        if command == ExecutorCommand.EXECUTE:
+            if execution_start_time is not None:
+                msg.execution_start_time = execution_start_time
+            else:
+                current_time = self._node.get_clock().now().to_msg()
+                current_time.sec += 5
+                msg.execution_start_time = current_time
+            self._logger.info(f"Sent command '{enum_to_str(ExecutorCommand, command)}' to executor of platform: {self._platform_id} with start_time: {msg.execution_start_time.sec}.{msg.execution_start_time.nanosec}.")
+        else:
+            self._logger.info(f"Sent command '{enum_to_str(ExecutorCommand, command)}' to executor of platform: {self._platform_id}.")
+        
         self._pub.publish(msg)
-        self._logger.info(f"Sent command '{enum_to_str(ExecutorCommand, command)}' to executor of platform: {self._platform_id}.")
 
     def executor_callback(self, msg):
         """
-        Callback for handling messages from executor to monitor.
+        Callback for handling messages from executor to controller.
         The expected JSON payload should include a "command" field.
         Recognized commands: "replan", "finished", "updateplan", or "feedback".
         """
@@ -70,7 +84,7 @@ class ExecutorInterface:
                 self._logger.info(f"Received feedback from executor of {self._platform_id}.")
                 self._feedback_wrapper(msg)
             elif command == PlannerCommand.RESET:
-                self._logger.info(f"Reset Monitor for: TODO Implement {self._platform_id}.")
+                self._logger.info(f"Reset Controller for: TODO Implement {self._platform_id}.")
                 self._reset_wrapper(msg)
             elif command == PlannerCommand.CANCEL_DONE:
                 self._logger.info(f"Canceled Plan of {self._platform_id}.")
@@ -94,7 +108,7 @@ class ExecutorInterface:
 
     def _cancel_done_wrapper(self, msg):
         """
-        Processes the cancel feedback message from the executor and forwards it to the planing_main
+        Processes the cancel feedback message from the executor and forwards it to the controller
         """
         self._cancel_done_callback(self, msg)
 

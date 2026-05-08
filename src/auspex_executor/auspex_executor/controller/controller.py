@@ -3,26 +3,25 @@ import json
 import time
 import rclpy
 import threading
-from .utils import compute_coverage
+from auspex_executor.utils.utils import compute_coverage, enum_to_str
 from rclpy.node import Node
-from .utils import enum_to_str
 from rclpy.callback_groups import ReentrantCallbackGroup
-from auspex_executor.action_clients.executor_interface import ExecutorInterface
-from auspex_db_client.kb_client import KB_Client
-from auspex_msgs.msg import ExecutorCommand, PlannerCommand, ExecutorState, ExecutionInfo, ActionInstance, ActionStatus, PlanStatus
+from auspex_executor.controller.executor_interface import ExecutorInterface
+from auspex_planning.planner.utils.knowledge_client_utils.knowledge_client_interface import KnowledgeClientInterface
+from auspex_msgs.msg import ExecutorCommand, PlannerCommand, ExecutorState, ExecutionInfo, Action, Task, ActionStatus, PlanStatus
 
-from auspex_msgs.msg import ObjectKnowledge
+from auspex_msgs.msg import ObjectObservation
 
-class AuspexExecutorMonitor(Node):
+class AuspexTeamController(Node):
     """
-    Ros2 node used to monitor the executors of a team.
+    Ros2 node used to monitor and control remote executors of a team via ROS interfaces.
 
     """
     def __init__(self, team_id):
         """
         Constructor method
         """
-        super().__init__(team_id + "_executor_monitor")
+        super().__init__(team_id + "_team_controller_node")
 
         """
         Executor State
@@ -39,8 +38,7 @@ class AuspexExecutorMonitor(Node):
         """
         Knowledge Base Interface
         """
-        self._kb_client = KB_Client(node_name_prefix="executor_monitor"+ team_id + "_")
-
+        self._knowledge_interface = KnowledgeClientInterface()
         self._is_team_paused = False
 
         """
@@ -49,9 +47,8 @@ class AuspexExecutorMonitor(Node):
         self._team_id = team_id
 
         """
-        Managed Executor Nodes
+        Managed Executor Interfaces (to remote executors)
         """
-        self._executor_nodes = {}
         self._executor_interfaces = {}
 
         """
@@ -63,26 +60,23 @@ class AuspexExecutorMonitor(Node):
         """
         A sub_node for adding service, which does not block the future
         """
-        self.sub_node =  rclpy.create_node('executor_monitor' + self._team_id , use_global_arguments=False)
+        self.sub_node =  rclpy.create_node('team_controller_' + self._team_id , use_global_arguments=False)
 
-    def init_executor(self):
-        self._planner_command_publisher = self.sub_node.create_publisher(PlannerCommand, '/' +self._team_id + '/monitor_to_planner', 10, callback_group=self._cb_group_pubsub)
-        self._monitor_command_subscriber = self.sub_node.create_subscription(ExecutorCommand, '/' +self._team_id + '/planner_to_monitor', self.planner_callback, 10, callback_group=self._cb_group_pubsub)
+    def init_controller(self):
+        self._planner_command_publisher = self.sub_node.create_publisher(PlannerCommand, '/' +self._team_id + '/controller2planner', 10, callback_group=self._cb_group_pubsub)
+        self._planner_command_subscriber = self.sub_node.create_subscription(ExecutorCommand, '/' +self._team_id + '/planner2controller', self.planner_callback, 10, callback_group=self._cb_group_pubsub)
         self.create_timer(0.1, callback=self._check_current_execution, callback_group=self._cb_group_actions)
 
-    def register_executor(self, executor):
-        self._executor_nodes[executor._platform_id] = executor
-        self._executor_interfaces[executor._platform_id] = ExecutorInterface(self.sub_node, executor._platform_id, self._team_id, self.feedback_callback, self.result_callback, self.cancel_done_callback)
-        self.get_logger().info("Registered executor for platform:" + executor._platform_id)
+    def register_executor_interface(self, platform_id):
+        self._executor_interfaces[platform_id] = ExecutorInterface(self.sub_node, platform_id, self._team_id, self.feedback_callback, self.result_callback, self.cancel_done_callback)
+        self.get_logger().info("Registered executor interface for platform: " + platform_id)
 
-    def unregister_executor(self, executor):
-        if executor in self._executor_nodes:
-            self._executor_nodes.remove(executor)
-            self._monitor_to_executor_publisher[executor._platform_id].destroy()
-            self._monitor_to_executor_subscriber[executor._platform_id].destroy()
-            self.get_logger().info("Unregistered executor for platform:" + executor._platform_id)
+    def unregister_executor_interface(self, platform_id):
+        if platform_id in self._executor_interfaces:
+            self._executor_interfaces.pop(platform_id)
+            self.get_logger().info("Unregistered executor interface for platform: " + platform_id)
         else:
-            self.get_logger().error("Executor not found in the list of registered executors.")
+            self.get_logger().error("Executor interface not found in the list of registered executor interfaces.")
 
     def result_callback(self, executor_interface, msg):
         self.get_logger().info(f'Result: {enum_to_str(PlannerCommand, msg.command)}')
@@ -163,13 +157,13 @@ class AuspexExecutorMonitor(Node):
             params = goal.get('parameters_json',{})
 
             if goal_type == 'FIND' and params.get('target_objects'):
-                detected_objects_db = self._kb_client.query(collection='object')
+                detected_objects_db = self._knowledge_interface.getObjects()
 
                 for detected_obj in detected_objects_db:
                     if detected_obj['detection_class'] in params['target_objects'] and float(detected_obj['confidence']) > 0.7:
 
-                        self._kb_client.update(collection='object', new_value='10', field='priority', key='id', value=detected_obj['id'])
-                        self._kb_client.update(collection='goal', new_value='COMPLETED', field='status', key='goal_id', value=goal_id)
+                        self._knowledge_interface.updateObjectPriorityByID(obj_id=detected_obj['id'], value=10)
+                        self.update_goal_status(goal_id, 'COMPLETED')
                         flag_msg = f"OBJECT_CONFIRMED"
                         flags.append(flag_msg)
 
@@ -177,7 +171,7 @@ class AuspexExecutorMonitor(Node):
 
                         flag_msg = f"POSSIBLE_OBJECT_DETECTED"
                         flags.append(flag_msg)
-                        self._kb_client.update(collection='object', new_value='0.6', field='confidence', key='id', value=detected_obj['id'])
+                        self._knowledge_interface.updateObjectConfidenceByID(obj_id=detected_obj['id'], value=0.6)
 
             elif goal_type == 'SEARCH':
 
@@ -190,16 +184,16 @@ class AuspexExecutorMonitor(Node):
 
                 elif params.get('locations'):
                     for location in params['locations']:
-                        areas_db = self._kb_client.query(collection='area', key='', value='')
+                        areas_db = self._knowledge_interface.getAreas()
                         for area in areas_db:
                             if location in area['name']:
                                 polygon_points = []
                                 for point in area['points'][1:]:
                                     polygon_points.append({"latitude": point[0], "longitude": point[1], "altitude": point[2]})
                                 polygon_points_list.append(polygon_points)
-
+                #TODO Dont compute coverage. Take the if area is completed or not
                 if polygon_points_list:
-                    platform_histories = self._kb_client.query(collection='history', key='team_id', value=self._team_id)
+                    platform_histories = self._knowledge_interface.getHistoryOfTeam(team_id=self._team_id)
 
                     coverage = 0.0
                     for polygon in polygon_points_list:
@@ -210,13 +204,13 @@ class AuspexExecutorMonitor(Node):
                     coverage = coverage/len(polygon_points_list)
 
                     if coverage > 0.6:
-                        self._kb_client.update(collection='goal', new_value='COMPLETED', field='status', key='goal_id', value=goal_id)
+                        self.update_goal_status(goal_id, 'COMPLETED')
 
             elif goal_type == 'LAND':
 
-                platform_states = self._kb_client.query(collection='platform', key='team_id', value=self._team_id)
+                platform_states = self._knowledge_interface.getPlatformDataOfTeam(team_id=self._team_id)
                 if platform_states and all(ps.get('platform_status', '').upper() == 'LANDED' for ps in platform_states):
-                    self._kb_client.update(collection='goal', new_value='COMPLETED', field='status', key='goal_id', value=goal_id)
+                    self.update_goal_status(goal_id, 'COMPLETED')
 
             elif goal_type == 'AND':
 
@@ -228,7 +222,7 @@ class AuspexExecutorMonitor(Node):
                         completed_children = False
                         break
                 if completed_children:
-                    self._kb_client.update(collection='goal', new_value='COMPLETED', field='status', key='goal_id', value=goal_id)
+                    self.update_goal_status(goal_id, 'COMPLETED')
 
             elif goal_type == 'OR':
 
@@ -236,7 +230,7 @@ class AuspexExecutorMonitor(Node):
                 for child_goal_id in goal_children:
                     child_goal = self.get_goal_by_id(child_goal_id)
                     if child_goal.get('status', '').upper() == 'COMPLETED':
-                        self._kb_client.update(collection='goal', new_value='COMPLETED', field='status', key='goal_id', value=goal_id)
+                        self.update_goal_status(child_goal_id, 'COMPLETED')
                         break
         return flags
 
@@ -245,7 +239,7 @@ class AuspexExecutorMonitor(Node):
             return []
 
         flags = []
-        plans = self._kb_client.query(collection='plan', key='team_id', value=self._team_id)
+        plans = self._knowledge_interface.getPlansOfTeam(team_id=self._team_id)
         if not plans:
             self.change_executor_state(ExecutorState.STATE_IDLE)
             return flags
@@ -289,6 +283,9 @@ class AuspexExecutorMonitor(Node):
         if len(interrupt_flags) > 0:
             return interrupt_flags
 
+    def update_goal_status(self, goal_id, status):
+        self._knowledge_interface.updateGoalStatusByID(goal_id=goal_id, status=status)
+
     def send_pause(self):
         if self._is_team_paused:
             return
@@ -314,13 +311,13 @@ class AuspexExecutorMonitor(Node):
                 executor.send_command(ExecutorCommand.CANCEL)
 
     def update_current_goals(self):
-        goals = self._kb_client.query(collection='goal', key='team_id', value=self._team_id)
+        goals = self._knowledge_interface.getGoalsOfTeam(team_id=self._team_id)
         if not goals:
             return []
         return goals
 
     def update_current_constraints(self):
-        constraints = []#self._kb_client.query(collection='constraint', key='team_id', value=self._team_id)
+        constraints = [] #self._knowledge_interface.getConstraintsOfTeam(team_id=self._team_id)
         current_constraints = []
         for constraint_entry in constraints:
             constraint = constraint_entry['value']

@@ -21,8 +21,9 @@ setup(
     license='MIT',
     entry_points={
         'console_scripts': [
-            'executor_main_node = auspex_executor.executor_handler:main',
-            'test_node = auspex_executor.test_node:main'
+            'controller_main_node = auspex_executor.controller.controller_handler:main',
+            'executor_main_node = auspex_executor.platform_executor.executor:main',
+            'kirk_server_handler = auspex_executor.platform_executor.executors.kirk_server_handler.kirk_server_handler:main',
         ],
     },
 )

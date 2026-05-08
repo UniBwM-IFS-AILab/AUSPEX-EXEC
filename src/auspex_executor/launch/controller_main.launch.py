@@ -12,7 +12,7 @@ def launch_setup(context, *args, **kwargs):
     #for i in range(0,drone_count):
     executors = Node(
         package=pkg_name,
-        executable="executor_main_node",
+        executable="controller_main_node",
         namespace="exe_handler/",
         emulate_tty=True,
         output='screen',)
